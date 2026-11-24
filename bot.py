@@ -43,7 +43,9 @@ last_trade_ts = 0
 last_uid = 0
 
 def tg_api(m):
-    return "https:" + S + S + "api.telegram.org" + S + "bot" + TELEGRAM_BOT_TOKEN.strip() + S + m
+    tg_host = "api." + "telegram" + ".org"
+    return "https:" + S + S + tg_host + S + "bot" + TELEGRAM_BOT_TOKEN.strip() + S + m
+
 
 def send_tg(msg):
     try:
@@ -167,7 +169,8 @@ def handle_tick(data):
 
 def ws_worker():
     global day_start, cur_day, paused
-    ws_url = "wss:" + S + S + "://derivws.com" + S + "websockets" + S + "v3?app_id=1089"
+    host_name = "ws." + "deriv" + "ws.com"
+    ws_url = "wss:" + S + S + host_name + S + "websockets" + S + "v3?app_id=1089"
     print("Connecting to Deriv WS...", flush=True)
     send_tg("🚀 *Deriv AI Dual Scanner चालू!* (`V10–V100`)\nकमांड्स: `/status`, `/both`, `/ou`, `/matches`")
     last_tg = 0
