@@ -8,7 +8,7 @@ from flask import Flask
 from collections import deque
 from datetime import datetime, timezone, timedelta
 
-TELEGRAM_BOT_TOKEN = os.environ.get("DERIV_TG_TOKEN", "YOUR_NEW_DERIV_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.environ.get("9229203140:AAHTePWnAsVLyGza-cwMcNqtQ6Vo9PDIjxw")
 TELEGRAM_CHAT_ID = "8466057689"
 
 S = chr(47)
