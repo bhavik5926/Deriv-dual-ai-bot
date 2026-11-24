@@ -46,20 +46,21 @@ def tg_api(m):
     return "https:" + S + S + "api.telegram.org" + S + "bot" + TELEGRAM_BOT_TOKEN.strip() + S + m
 
 def send_tg(msg):
-    if "YOUR_NEW" in TELEGRAM_BOT_TOKEN:
-        return
     try:
-        requests.post(tg_api("sendMessage"), json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=8)
-    except Exception:
-        pass
+        r = requests.post(tg_api("sendMessage"), json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=8)
+        if r.status_code != 200:
+            print("TG Send Err:", r.status_code, r.text[:100], flush=True)
+    except Exception as e:
+        print("TG Post Err:", e, flush=True)
 
 def check_tg():
     global last_uid, paused
-    if "YOUR_NEW" in TELEGRAM_BOT_TOKEN:
-        return
     try:
-        r = requests.get(tg_api("getUpdates"), params={"offset": last_uid + 1, "timeout": 1}, timeout=5).json()
-        for item in r.get("result", []):
+        res = requests.get(tg_api("getUpdates"), params={"offset": last_uid + 1, "timeout": 1}, timeout=5)
+        if res.status_code != 200:
+            print("TG Poll Err:", res.status_code, res.text[:100], flush=True)
+            return
+        for item in res.json().get("result", []):
             last_uid = item["update_id"]
             m = item.get("message", {})
             txt = m.get("text", "").strip().lower()
@@ -89,8 +90,8 @@ def check_tg():
                     f"🎰 Match WR: `{m_wr:.1f}%` ({stats['m_w']}W/{stats['m_l']}L)\n"
                     f"⚙️ मोड: `{cfg['mode']}`"
                 )
-    except Exception:
-        pass
+    except Exception as e:
+        print("TG Check Err:", e, flush=True)
 
 def get_signal(sym):
     d = list(history[sym])
@@ -100,37 +101,37 @@ def get_signal(sym):
     last_d = d[-1]
     if cfg["mode"] in ["BOTH", "OVER_UNDER"]:
         if sum(1 for x in r30 if x > 2) >= 24 and last_d <= 2:
-            return ("OVER", 2, cfg["ou_stake_pct"], 1.38, f"Over-2 Trend + Dip ({last_d})")
+            return {"t": "OVER", "p": 2, "sp": cfg["ou_stake_pct"], "mult": 1.38, "why": f"Over-2 Trend + Dip ({last_d})"}
         if sum(1 for x in r30 if x < 7) >= 24 and last_d >= 7:
-            return ("UNDER", 7, cfg["ou_stake_pct"], 1.38, f"Under-7 Trend + Spike ({last_d})")
+            return {"t": "UNDER", "p": 7, "sp": cfg["ou_stake_pct"], "mult": 1.38, "why": f"Under-7 Trend + Spike ({last_d})"}
     if cfg["mode"] in ["BOTH", "MATCHES"] and len(d) >= 60:
         r40 = d[-40:]
         for target in range(10):
             if target not in r40:
-                return ("MATCHES", target, cfg["match_stake_pct"], 9.0, f"Digit {target} 40 टिक्स से गायब")
+                return {"t": "MATCHES", "p": target, "sp": cfg["match_stake_pct"], "mult": 9.0, "why": f"Digit {target} 40 टिक्स से गायब"}
     return None
 
 def settle(sym, digit):
     global balance, paused
     t = open_trade.pop(sym)
-    won = (t[0] == "OVER" and digit > t[1]) or (t[0] == "UNDER" and digit < t[1]) or (t[0] == "MATCHES" and digit == t[1])
+    won = (t["t"] == "OVER" and digit > t["p"]) or (t["t"] == "UNDER" and digit < t["p"]) or (t["t"] == "MATCHES" and digit == t["p"])
     if won:
-        win_amt = round(t[2] * t[3], 2)
-        prof = round(win_amt - t[2], 2)
+        win_amt = round(t["stake"] * t["mult"], 2)
+        prof = round(win_amt - t["stake"], 2)
         balance = round(balance + win_amt, 2)
         stats["pnl"] = round(stats["pnl"] + prof, 2)
-        if t[0] == "MATCHES":
+        if t["t"] == "MATCHES":
             stats["m_w"] += 1
         else:
             stats["ou_w"] += 1
-        send_tg(f"✅ *WIN ({t[0]} {t[1]})* | {SYMBOLS[sym]} | अंक: `{digit}` | `+${prof:.2f}` | बैलेंस: `${balance:.2f}`")
+        send_tg(f"✅ *WIN ({t['t']} {t['p']})* | {SYMBOLS[sym]} | अंक: `{digit}` | `+${prof:.2f}` | बैलेंस: `${balance:.2f}`")
     else:
-        stats["pnl"] = round(stats["pnl"] - t[2], 2)
-        if t[0] == "MATCHES":
+        stats["pnl"] = round(stats["pnl"] - t["stake"], 2)
+        if t["t"] == "MATCHES":
             stats["m_l"] += 1
         else:
             stats["ou_l"] += 1
-        send_tg(f"🔻 *LOSS ({t[0]} {t[1]})* | {SYMBOLS[sym]} | अंक: `{digit}` | `-${t[2]:.2f}` | बैलेंस: `${balance:.2f}`")
+        send_tg(f"🔻 *LOSS ({t['t']} {t['p']})* | {SYMBOLS[sym]} | अंक: `{digit}` | `-${t['stake']:.2f}` | बैलेंस: `${balance:.2f}`")
 
     chg = ((balance - day_start) / day_start) * 100
     if not paused and chg >= cfg["daily_profit_target"]:
@@ -157,21 +158,23 @@ def handle_tick(data):
     if not paused and not open_trade and (now - last_trade_ts) >= cfg["cooldown_sec"]:
         sig = get_signal(sym)
         if sig:
-            stake = round(balance * (sig[2] / 100.0), 2)
+            stake = round(balance * (sig["sp"] / 100.0), 2)
             if stake >= 0.50 and balance >= stake:
                 balance = round(balance - stake, 2)
                 last_trade_ts = now
-                open_trade[sym] = (sig[0], sig[1], stake, sig[3])
-                send_tg(f"⚡ *SIGNAL: {sig[0]} {sig[1]}* | {SYMBOLS[sym]}\n💲 स्टेक: `${stake:.2f}` | कारण: {sig[4]}")
+                open_trade[sym] = {"t": sig["t"], "p": sig["p"], "stake": stake, "mult": sig["mult"]}
+                send_tg(f"⚡ *SIGNAL: {sig['t']} {sig['p']}* | {SYMBOLS[sym]}\n💲 स्टेक: `${stake:.2f}` | कारण: {sig['why']}")
 
 def ws_worker():
     global day_start, cur_day, paused
     ws_url = "wss:" + S + S + "://derivws.com" + S + "websockets" + S + "v3?app_id=1089"
+    print("Connecting to Deriv WS...", flush=True)
     send_tg("🚀 *Deriv AI Dual Scanner चालू!* (`V10–V100`)\nकमांड्स: `/status`, `/both`, `/ou`, `/matches`")
     last_tg = 0
     while True:
         try:
             ws = websocket.create_connection(ws_url, timeout=15)
+            print("Deriv WS Connected!", flush=True)
             for s in SYMBOLS:
                 ws.send(json.dumps({"ticks": s, "subscribe": 1}))
             while True:
