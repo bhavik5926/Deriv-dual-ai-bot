@@ -17,10 +17,9 @@ app = Flask(__name__)
 
 @app.route(S)
 def home():
-    return "Deriv AI Scanner (Over/Under + Matches) is Running 24x7!"
+    return "Deriv AI Scanner is Live!"
 
-SETTINGS_FILE = "deriv_settings.json"
-DEFAULT_SETTINGS = {
+cfg = {
     "mode": "BOTH",
     "ou_stake_pct": 5.0,
     "match_stake_pct": 1.5,
@@ -29,257 +28,167 @@ DEFAULT_SETTINGS = {
     "cooldown_sec": 25
 }
 
-SYMBOLS = {
-    "R_10": "Volatility 10",
-    "R_25": "Volatility 25",
-    "R_50": "Volatility 50",
-    "R_75": "Volatility 75",
-    "R_100": "Volatility 100"
-}
+SYMBOLS = {"R_10": "V10", "R_25": "V25", "R_50": "V50", "R_75": "V75", "R_100": "V100"}
+PIP_MAP = {"R_10": 3, "R_25": 3, "R_50": 4, "R_75": 4, "R_100": 2}
 
 balance = 100.0
-day_start_balance = 100.0
-current_day = datetime.now(IST).strftime("%Y-%m-%d")
-paused_today = False
+day_start = 100.0
+cur_day = datetime.now(IST).strftime("%Y-%m-%d")
+paused = False
 
-digit_history = {sym: deque(maxlen=80) for sym in SYMBOLS}
-pending_trades = {}
-stats = {
-    "ou_wins": 0, "ou_losses": 0,
-    "m_wins": 0, "m_losses": 0,
-    "total_pnl": 0.0
-}
-last_trade_time = 0
-last_update_id = 0
+history = {k: deque(maxlen=80) for k in SYMBOLS}
+open_trade = {}
+stats = {"ou_w": 0, "ou_l": 0, "m_w": 0, "m_l": 0, "pnl": 0.0}
+last_trade_ts = 0
+last_uid = 0
 
-def tg_url(method):
-    return "https:" + S + S + "api.telegram.org" + S + "bot" + TELEGRAM_BOT_TOKEN.strip() + S + method
-
-def load_settings():
-    if not os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "w") as f:
-            json.dump(DEFAULT_SETTINGS, f, indent=4)
-        return DEFAULT_SETTINGS.copy()
-    try:
-        with open(SETTINGS_FILE, "r") as f:
-            data = json.load(f)
-            for k, v in DEFAULT_SETTINGS.items():
-                if k not in data:
-                    data[k] = v
-            return data
-    except Exception:
-        return DEFAULT_SETTINGS.copy()
-
-def save_settings(cfg):
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(cfg, f, indent=4)
+def tg_api(m):
+    return "https:" + S + S + "api.telegram.org" + S + "bot" + TELEGRAM_BOT_TOKEN.strip() + S + m
 
 def send_tg(msg):
     if "YOUR_NEW" in TELEGRAM_BOT_TOKEN:
-        print("TG:", msg, flush=True)
         return
     try:
-        requests.post(
-            tg_url("sendMessage"),
-            json={"chat_id": str(TELEGRAM_CHAT_ID).strip(), "text": msg, "parse_mode": "Markdown"},
-            timeout=8
-        )
-    except Exception as e:
-        print("TG Err:", e, flush=True)
+        requests.post(tg_api("sendMessage"), json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=8)
+    except Exception:
+        pass
 
 def check_tg():
-    global last_update_id, paused_today
+    global last_uid, paused
     if "YOUR_NEW" in TELEGRAM_BOT_TOKEN:
         return
     try:
-        r = requests.get(tg_url("getUpdates"), params={"offset": last_update_id + 1, "timeout": 1}, timeout=6)
-        if r.status_code != 200:
-            return
-        for item in r.json().get("result", []):
-            last_update_id = item["update_id"]
-            msg_obj = item.get("message", {})
-            text = msg_obj.get("text", "").strip().lower()
-            if str(msg_obj.get("chat", {}).get("id", "")) != str(TELEGRAM_CHAT_ID).strip():
+        r = requests.get(tg_api("getUpdates"), params={"offset": last_uid + 1, "timeout": 1}, timeout=5).json()
+        for item in r.get("result", []):
+            last_uid = item["update_id"]
+            m = item.get("message", {})
+            txt = m.get("text", "").strip().lower()
+            if str(m.get("chat", {}).get("id", "")) != TELEGRAM_CHAT_ID:
                 continue
-
-            cfg = load_settings()
-            if text in [S + "mode both", S + "both"]:
+            if txt in [S + "both", S + "mode both"]:
                 cfg["mode"] = "BOTH"
-                save_settings(cfg)
-                send_tg("🔄 *मोड अपडेट:* अब `OVER/UNDER` और `MATCHES` दोनों चलेंगे।")
-            elif text in [S + "mode ou", S + "ou"]:
+                send_tg("🔄 मोड: `BOTH` (Over/Under + Matches)")
+            elif txt in [S + "ou", S + "mode ou"]:
                 cfg["mode"] = "OVER_UNDER"
-                save_settings(cfg)
-                send_tg("🔄 *मोड अपडेट:* अब केवल `OVER/UNDER` चलेगा।")
-            elif text in [S + "mode match", S + "matches"]:
+                send_tg("🔄 मोड: `OVER_UNDER`")
+            elif txt in [S + "matches", S + "mode match"]:
                 cfg["mode"] = "MATCHES"
-                save_settings(cfg)
-                send_tg("🔄 *मोड अपडेट:* अब केवल `DIGIT MATCHES` चलेगा।")
-            elif text == S + "resume":
-                paused_today = False
-                send_tg("▶️ *बॉट फिर से सक्रिय कर दिया गया है।*")
-            elif text in [S + "status", S + "start"]:
-                ou_tot = stats["ou_wins"] + stats["ou_losses"]
-                ou_wr = (stats["ou_wins"] / ou_tot * 100) if ou_tot > 0 else 0.0
-                m_tot = stats["m_wins"] + stats["m_losses"]
-                m_wr = (stats["m_wins"] / m_tot * 100) if m_tot > 0 else 0.0
-                daily_pct = ((balance - day_start_balance) / day_start_balance * 100) if day_start_balance > 0 else 0.0
+                send_tg("🔄 मोड: `MATCHES`")
+            elif txt == S + "resume":
+                paused = False
+                send_tg("▶️ ट्रेडिंग फिर से चालू!")
+            elif txt in [S + "status", S + "start"]:
+                ou_t = stats["ou_w"] + stats["ou_l"]
+                ou_wr = (stats["ou_w"] / ou_t * 100) if ou_t else 0.0
+                m_t = stats["m_w"] + stats["m_l"]
+                m_wr = (stats["m_w"] / m_t * 100) if m_t else 0.0
                 send_tg(
-                    f"📊 *DERIV AI SCANNER STATUS*\n"
-                    f"💎 वर्चुअल बैलेंस: `${balance:.2f}` (`{daily_pct:+.2f}%` आज)\n"
-                    f"📈 कुल नेट PnL: `${stats['total_pnl']:+.2f}`\n"
-                    f"🎯 Over/Under WR: `{ou_wr:.1f}%` ({stats['ou_wins']}W / {stats['ou_losses']}L)\n"
-                    f"🎰 Matches WR: `{m_wr:.1f}%` ({stats['m_wins']}W / {stats['m_losses']}L)\n"
-                    f"⚙️ सक्रिय मोड: `{cfg['mode']}`"
+                    f"📊 *DERIV AI STATUS*\n"
+                    f"💎 बैलेंस: `${balance:.2f}` | PnL: `${stats['pnl']:+.2f}`\n"
+                    f"🎯 O/U WR: `{ou_wr:.1f}%` ({stats['ou_w']}W/{stats['ou_l']}L)\n"
+                    f"🎰 Match WR: `{m_wr:.1f}%` ({stats['m_w']}W/{stats['m_l']}L)\n"
+                    f"⚙️ मोड: `{cfg['mode']}`"
                 )
     except Exception:
         pass
 
-def extract_last_digit(quote_val, pip_size=2):
-    formatted = f"{float(quote_val):.{pip_size}f}"
-    return int(formatted[-1])
-
-def analyze_ai_signal(sym, cfg):
-    digits = list(digit_history[sym])
-    if len(digits) < 45:
+def get_signal(sym):
+    d = list(history[sym])
+    if len(d) < 45:
         return None
-
-    mode = cfg["mode"]
-    recent_30 = digits[-30:]
-    last_digit = digits[-1]
-
-    if mode in ["BOTH", "OVER_UNDER"]:
-        over2_count = sum(1 for d in recent_30 if d > 2)
-        under7_count = sum(1 for d in recent_30 if d < 7)
-
-        if over2_count >= 24 and last_digit <= 2:
-            return {
-                "type": "OVER",
-                "pred": 2,
-                "stake_pct": cfg["ou_stake_pct"],
-                "payout_mult": 1.38,
-                "reason": f"Over-2 Trend ({over2_count}/30) + Dip Reversal ({last_digit})"
-            }
-
-        if under7_count >= 24 and last_digit >= 7:
-            return {
-                "type": "UNDER",
-                "pred": 7,
-                "stake_pct": cfg["ou_stake_pct"],
-                "payout_mult": 1.38,
-                "reason": f"Under-7 Trend ({under7_count}/30) + Spike Reversal ({last_digit})"
-            }
-
-    if mode in ["BOTH", "MATCHES"] and len(digits) >= 60:
-        recent_40 = digits[-40:]
-        for target_d in range(10):
-            if target_d not in recent_40:
-                return {
-                    "type": "MATCHES",
-                    "pred": target_d,
-                    "stake_pct": cfg["match_stake_pct"],
-                    "payout_mult": 9.0,
-                    "reason": f"Cold Digit '{target_d}' 40 टिक्स से गायब है!"
-                }
-
+    r30 = d[-30:]
+    last_d = d[-1]
+    if cfg["mode"] in ["BOTH", "OVER_UNDER"]:
+        if sum(1 for x in r30 if x > 2) >= 24 and last_d <= 2:
+            return ("OVER", 2, cfg["ou_stake_pct"], 1.38, f"Over-2 Trend + Dip ({last_d})")
+        if sum(1 for x in r30 if x < 7) >= 24 and last_d >= 7:
+            return ("UNDER", 7, cfg["ou_stake_pct"], 1.38, f"Under-7 Trend + Spike ({last_d})")
+    if cfg["mode"] in ["BOTH", "MATCHES"] and len(d) >= 60:
+        r40 = d[-40:]
+        for target in range(10):
+            if target not in r40:
+                return ("MATCHES", target, cfg["match_stake_pct"], 9.0, f"Digit {target} 40 टिक्स से गायब")
     return None
 
-def settle_trade(sym, actual_digit):
-    global balance, paused_today
-    trade = pending_trades.pop(sym)
-    t_type = trade["type"]
-    pred = trade["pred"]
-    stake = trade["stake"]
-    won = False
-
-    if t_type == "OVER" and actual_digit > pred:
-        won = True
-    elif t_type == "UNDER" and actual_digit < pred:
-        won = True
-    elif t_type == "MATCHES" and actual_digit == pred:
-        won = True
-
+def settle(sym, digit):
+    global balance, paused
+    t = open_trade.pop(sym)
+    won = (t[0] == "OVER" and digit > t[1]) or (t[0] == "UNDER" and digit < t[1]) or (t[0] == "MATCHES" and digit == t[1])
     if won:
-        payout = round(stake * trade["payout_mult"], 2)
-        profit = round(payout - stake, 2)
-        balance = round(balance + payout, 2)
-        stats["total_pnl"] = round(stats["total_pnl"] + profit, 2)
-        if t_type == "MATCHES":
-            stats["m_wins"] += 1
+        win_amt = round(t[2] * t[3], 2)
+        prof = round(win_amt - t[2], 2)
+        balance = round(balance + win_amt, 2)
+        stats["pnl"] = round(stats["pnl"] + prof, 2)
+        if t[0] == "MATCHES":
+            stats["m_w"] += 1
         else:
-            stats["ou_wins"] += 1
-        send_tg(
-            f"✅ *DERIV WIN ({t_type} {pred})*\n"
-            f"📌 {SYMBOLS[sym]} | आया अंक: `{actual_digit}`\n"
-            f"💵 लाभ: `+${profit:.2f}` | नया बैलेंस: `${balance:.2f}`"
-        )
+            stats["ou_w"] += 1
+        send_tg(f"✅ *WIN ({t[0]} {t[1]})* | {SYMBOLS[sym]} | अंक: `{digit}` | `+${prof:.2f}` | बैलेंस: `${balance:.2f}`")
     else:
-        stats["total_pnl"] = round(stats["total_pnl"] - stake, 2)
-        if t_type == "MATCHES":
-            stats["m_losses"] += 1
+        stats["pnl"] = round(stats["pnl"] - t[2], 2)
+        if t[0] == "MATCHES":
+            stats["m_l"] += 1
         else:
-            stats["ou_losses"] += 1
-        send_tg(
-            f"🔻 *DERIV LOSS ({t_type} {pred})*\n"
-            f"📌 {SYMBOLS[sym]} | आया अंक: `{actual_digit}`\n"
-            f"💸 नुकसान: `-${stake:.2f}` | नया बैलेंस: `${balance:.2f}`"
-        )
+            stats["ou_l"] += 1
+        send_tg(f"🔻 *LOSS ({t[0]} {t[1]})* | {SYMBOLS[sym]} | अंक: `{digit}` | `-${t[2]:.2f}` | बैलेंस: `${balance:.2f}`")
 
-    cfg = load_settings()
-    daily_chg_pct = ((balance - day_start_balance) / day_start_balance) * 100
-    if not paused_today:
-        if daily_chg_pct >= cfg["daily_profit_target"]:
-            paused_today = True
-            send_tg(f"🏆 *DAILY TARGET HIT (+{daily_chg_pct:.1f}%)*\nआज का मुनाफा लॉक कर दिया गया है! कल फिर शुरू होगा।")
-        elif daily_chg_pct <= -cfg["daily_loss_limit"]:
-            paused_today = True
-            send_tg(f"🛡️ *DAILY LOSS LIMIT (-{abs(daily_chg_pct):.1f}%)*\nसुरक्षा के लिए आज ट्रेडिंग रोकी गई है।")
+    chg = ((balance - day_start) / day_start) * 100
+    if not paused and chg >= cfg["daily_profit_target"]:
+        paused = True
+        send_tg(f"🏆 *DAILY TARGET (+{chg:.1f}%)* — आज का लाभ लॉक!")
+    elif not paused and chg <= -cfg["daily_loss_limit"]:
+        paused = True
+        send_tg(f"🛡️ *DAILY LOSS LIMIT (-{abs(chg):.1f}%)* — आज ट्रेडिंग रुकी!")
 
-def deriv_ws_loop():
-    global balance, day_start_balance, current_day, paused_today, last_trade_time
+def handle_tick(data):
+    global balance, last_trade_ts
+    if "tick" not in data:
+        return
+    tk = data["tick"]
+    sym = tk["symbol"]
+    pip = tk.get("pip_size", PIP_MAP.get(sym, 2))
+    digit = int(f"{float(tk['quote']):.{pip}f}"[-1])
+
+    if sym in open_trade:
+        settle(sym, digit)
+    history[sym].append(digit)
+
+    now = time.time()
+    if not paused and not open_trade and (now - last_trade_ts) >= cfg["cooldown_sec"]:
+        sig = get_signal(sym)
+        if sig:
+            stake = round(balance * (sig[2] / 100.0), 2)
+            if stake >= 0.50 and balance >= stake:
+                balance = round(balance - stake, 2)
+                last_trade_ts = now
+                open_trade[sym] = (sig[0], sig[1], stake, sig[3])
+                send_tg(f"⚡ *SIGNAL: {sig[0]} {sig[1]}* | {SYMBOLS[sym]}\n💲 स्टेक: `${stake:.2f}` | कारण: {sig[4]}")
+
+def ws_worker():
+    global day_start, cur_day, paused
     ws_url = "wss:" + S + S + "://derivws.com" + S + "websockets" + S + "v3?app_id=1089"
-    pip_map = {"R_10": 3, "R_25": 3, "R_50": 4, "R_75": 4, "R_100": 2}
-
-    send_tg(
-        f"🚀 *Deriv AI Dual Scanner (Over/Under + Matches) चालू!*\n"
-        f"💎 शुरुआती बैलेंस: `${balance:.2f}`\n"
-        f"📡 स्कैनिंग: `V10, V25, V50, V75, V100`\n"
-        f"📋 कमांड्स: `/status`, `/both`, `/ou`, `/matches`"
-    )
-
+    send_tg("🚀 *Deriv AI Dual Scanner चालू!* (`V10–V100`)\nकमांड्स: `/status`, `/both`, `/ou`, `/matches`")
+    last_tg = 0
     while True:
         try:
             ws = websocket.create_connection(ws_url, timeout=15)
-            for sym in SYMBOLS:
-                ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
-
-            last_tg_check = 0
+            for s in SYMBOLS:
+                ws.send(json.dumps({"ticks": s, "subscribe": 1}))
             while True:
-                now_ts = time.time()
-                if now_ts - last_tg_check >= 5:
+                if time.time() - last_tg >= 5:
                     check_tg()
-                    last_tg_check = now_ts
-
+                    last_tg = time.time()
                 today = datetime.now(IST).strftime("%Y-%m-%d")
-                if today != current_day:
-                    current_day = today
-                    day_start_balance = balance
-                    paused_today = False
+                if today != cur_day:
+                    cur_day = today
+                    day_start = balance
+                    paused = False
+                handle_tick(json.loads(ws.recv()))
+        except Exception as e:
+            print("WS Err:", e, flush=True)
+            time.sleep(5)
 
-                raw = ws.recv()
-                data = json.loads(raw)
-                if "tick" not in data:
-                    continue
+threading.Thread(target=ws_worker, daemon=True).start()
 
-                tick = data["tick"]
-                sym = tick["symbol"]
-                quote = tick["quote"]
-                pip = tick.get("pip_size", pip_map.get(sym, 2))
-                digit = extract_last_digit(quote, pip)
-
-                if sym in pending_trades:
-                    settle_trade(sym, digit)
-
-                digit_history[sym].append(digit)
-
-                cfg = load_settings()
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
