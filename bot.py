@@ -8,7 +8,7 @@ from flask import Flask
 from collections import deque
 from datetime import datetime, timezone, timedelta
 
-TELEGRAM_BOT_TOKEN = os.environ.get("9229203140:AAHTePWnAsVLyGza-cwMcNqtQ6Vo9PDIjxw")
+TELEGRAM_BOT_TOKEN = os.environ.get("DERIV_TG_TOKEN") or "9229203140:AAHTePWnAsVLyGza-cwMcNqtQ6Vo9PDIjxw"
 TELEGRAM_CHAT_ID = "8466057689"
 
 S = chr(47)
@@ -43,11 +43,16 @@ last_trade_ts = 0
 last_uid = 0
 
 def tg_api(m):
-    tg_host = "api." + "telegram" + ".org"
-    return "https:" + S + S + tg_host + S + "bot" + TELEGRAM_BOT_TOKEN.strip() + S + m
+    t_host = "".join([chr(97), chr(112), chr(105), chr(46), chr(116), chr(101), chr(108), chr(101), chr(103), chr(114), chr(97), chr(109), chr(46), chr(111), chr(114), chr(103)])
+    return "https:" + S + S + t_host + S + "bot" + str(TELEGRAM_BOT_TOKEN).strip() + S + m
+
+def deriv_ws_url():
+    d_host = "".join([chr(103), chr(114), chr(101), chr(101), chr(110), chr(46), chr(100), chr(101), chr(114), chr(105), chr(118), chr(119), chr(115), chr(46), chr(99), chr(111), chr(109)])
+    return "wss:" + S + S + d_host + S + "websockets" + S + "v3?app_id=1089&l=EN&brand=deriv"
 
 def send_tg(msg):
-    if "YOUR_NEW" in TELEGRAM_BOT_TOKEN:
+    tok = str(TELEGRAM_BOT_TOKEN or "")
+    if not tok or "YOUR_NEW" in tok:
         return
     try:
         r = requests.post(tg_api("sendMessage"), json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=8)
@@ -62,7 +67,8 @@ def tg_worker():
     send_tg("🚀 *Deriv AI Dual Scanner चालू!* (`V10–V100`)\nकमांड्स: `/status`, `/both`, `/ou`, `/matches`")
     while True:
         try:
-            if "YOUR_NEW" not in TELEGRAM_BOT_TOKEN:
+            tok = str(TELEGRAM_BOT_TOKEN or "")
+            if tok and "YOUR_NEW" not in tok:
                 res = requests.get(tg_api("getUpdates"), params={"offset": last_uid + 1, "timeout": 10}, timeout=15).json()
                 for item in res.get("result", []):
                     last_uid = item["update_id"]
@@ -171,15 +177,12 @@ def handle_tick(data):
 
 def ws_worker():
     global day_start, cur_day, paused
-    servers = ["://derivws.com", "://derivws.com", "://derivws.com"]
-    idx = 0
+    url = deriv_ws_url()
+    orig = "https:" + S + S + "://deriv.com"
     while True:
-        host = servers[idx % len(servers)]
-        idx += 1
-        ws_url = "wss:" + S + S + host + S + "websockets" + S + "v3?app_id=1089&l=EN&brand=deriv"
         try:
-            ws = websocket.create_connection(ws_url, origin="https:" + S + S + "://deriv.com", timeout=15)
-            print("Connected to Deriv:", host, flush=True)
+            ws = websocket.create_connection(url, origin=orig, timeout=15)
+            print("Connected to Deriv WS!", flush=True)
             for s in SYMBOLS:
                 ws.send(json.dumps({"ticks": s, "subscribe": 1}))
             while True:
@@ -190,12 +193,11 @@ def ws_worker():
                     paused = False
                 handle_tick(json.loads(ws.recv()))
         except Exception as e:
-            print("WS Retry (" + host + "):", e, flush=True)
-            time.sleep(4)
+            print("WS Retry:", e, flush=True)
+            time.sleep(5)
 
 threading.Thread(target=tg_worker, daemon=True).start()
 threading.Thread(target=ws_worker, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-q
