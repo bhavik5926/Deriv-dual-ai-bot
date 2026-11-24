@@ -174,9 +174,12 @@ def ws_worker():
     print("Connecting to Deriv WS...", flush=True)
     send_tg("🚀 *Deriv AI Dual Scanner चालू!* (`V10–V100`)\nकमांड्स: `/status`, `/both`, `/ou`, `/matches`")
     last_tg = 0
-    while True:
+        while True:
         try:
-            ws = websocket.create_connection(ws_url, timeout=15)
+            check_tg()
+            hdrs = ["Origin: https://deriv.com", "User-Agent: Mozilla/5.0"]
+            ws = websocket.create_connection(ws_url, header=hdrs, timeout=15)
+
             print("Deriv WS Connected!", flush=True)
             for s in SYMBOLS:
                 ws.send(json.dumps({"ticks": s, "subscribe": 1}))
