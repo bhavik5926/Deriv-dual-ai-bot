@@ -8,10 +8,8 @@ from flask import Flask
 from collections import deque
 from datetime import datetime, timezone, timedelta
 
-# ================= TELEGRAM सेटिंग्स =================
 TELEGRAM_BOT_TOKEN = os.environ.get("9256114967:AAFQ4MsUQbb26EGjtZM1H9P1VX5uTFaMzIc")
 TELEGRAM_CHAT_ID = "8466057689"
-# ====================================================
 
 S = chr(47)
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -23,12 +21,12 @@ def home():
 
 SETTINGS_FILE = "deriv_settings.json"
 DEFAULT_SETTINGS = {
-    "mode": "BOTH",               # BOTH, OVER_UNDER, या MATCHES
-    "ou_stake_pct": 5.0,          # Over/Under में इक्विटी का 5% स्टेक
-    "match_stake_pct": 1.5,       # Digit Matches में इक्विटी का 1.5% स्टेक (9x पेआउट के कारण)
-    "daily_profit_target": 15.0,  # रोज़ का +15% मुनाफा लक्ष्य
-    "daily_loss_limit": 10.0,     # रोज़ की -10% नुकसान सीमा
-    "cooldown_sec": 25            # दो ट्रेड्स के बीच न्यूनतम अंतर
+    "mode": "BOTH",
+    "ou_stake_pct": 5.0,
+    "match_stake_pct": 1.5,
+    "daily_profit_target": 15.0,
+    "daily_loss_limit": 10.0,
+    "cooldown_sec": 25
 }
 
 SYMBOLS = {
@@ -45,7 +43,7 @@ current_day = datetime.now(IST).strftime("%Y-%m-%d")
 paused_today = False
 
 digit_history = {sym: deque(maxlen=80) for sym in SYMBOLS}
-pending_trades = {}  # {sym: {"type": ..., "pred": ..., "stake": ..., "payout_mult": ...}}
+pending_trades = {}
 stats = {
     "ou_wins": 0, "ou_losses": 0,
     "m_wins": 0, "m_losses": 0,
@@ -150,18 +148,16 @@ def analyze_ai_signal(sym, cfg):
     recent_30 = digits[-30:]
     last_digit = digits[-1]
 
-    # 1. OVER / UNDER AI स्कैनर (High Probability Over 2 / Under 7)
     if mode in ["BOTH", "OVER_UNDER"]:
         over2_count = sum(1 for d in recent_30 if d > 2)
         under7_count = sum(1 for d in recent_30 if d < 7)
 
-        # अगर पिछले 30 में से 24+ बार (80%+) >2 आया हो और अभी-अभी <=2 आकर रिवर्सल सेट हुआ हो
         if over2_count >= 24 and last_digit <= 2:
             return {
                 "type": "OVER",
                 "pred": 2,
                 "stake_pct": cfg["ou_stake_pct"],
-                "payout_mult": 1.38,  # +38% लाभ
+                "payout_mult": 1.38,
                 "reason": f"Over-2 Trend ({over2_count}/30) + Dip Reversal ({last_digit})"
             }
 
@@ -174,17 +170,15 @@ def analyze_ai_signal(sym, cfg):
                 "reason": f"Under-7 Trend ({under7_count}/30) + Spike Reversal ({last_digit})"
             }
 
-    # 2. DIGIT MATCHES AI स्कैनर (Cold Digit Due Theory)
     if mode in ["BOTH", "MATCHES"] and len(digits) >= 60:
         recent_40 = digits[-40:]
         for target_d in range(10):
             if target_d not in recent_40:
-                # 40 टिक्स से यह अंक गायब है — उच्च वापसी संभावना
                 return {
                     "type": "MATCHES",
                     "pred": target_d,
                     "stake_pct": cfg["match_stake_pct"],
-                    "payout_mult": 9.0,  # +800% जैकपॉट पेआउट
+                    "payout_mult": 9.0,
                     "reason": f"Cold Digit '{target_d}' 40 टिक्स से गायब है!"
                 }
 
@@ -231,7 +225,6 @@ def settle_trade(sym, actual_digit):
             f"💸 नुकसान: `-${stake:.2f}` | नया बैलेंस: `${balance:.2f}`"
         )
 
-    # Daily Profit Target / Loss Limit चेक
     cfg = load_settings()
     daily_chg_pct = ((balance - day_start_balance) / day_start_balance) * 100
     if not paused_today:
@@ -267,4 +260,26 @@ def deriv_ws_loop():
                     check_tg()
                     last_tg_check = now_ts
 
-                # नया दिन चेक करें
+                today = datetime.now(IST).strftime("%Y-%m-%d")
+                if today != current_day:
+                    current_day = today
+                    day_start_balance = balance
+                    paused_today = False
+
+                raw = ws.recv()
+                data = json.loads(raw)
+                if "tick" not in data:
+                    continue
+
+                tick = data["tick"]
+                sym = tick["symbol"]
+                quote = tick["quote"]
+                pip = tick.get("pip_size", pip_map.get(sym, 2))
+                digit = extract_last_digit(quote, pip)
+
+                if sym in pending_trades:
+                    settle_trade(sym, digit)
+
+                digit_history[sym].append(digit)
+
+                cfg = load_settings()
