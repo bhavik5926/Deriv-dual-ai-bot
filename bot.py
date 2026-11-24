@@ -8,7 +8,7 @@ from flask import Flask
 from collections import deque
 from datetime import datetime, timezone, timedelta
 
-TELEGRAM_BOT_TOKEN = os.environ.get("9229203140:AAHTePWnAsVLyGza-cwMcNqtQ6Vo9PDIjxw")
+TELEGRAM_BOT_TOKEN = os.environ.get("DERIV_TG_TOKEN", "YOUR_NEW_DERIV_BOT_TOKEN")
 TELEGRAM_CHAT_ID = "8466057689"
 
 S = chr(47)
@@ -17,7 +17,7 @@ app = Flask(__name__)
 
 @app.route(S)
 def home():
-    return "Deriv AI Scanner is Live!"
+    return "Deriv AI Scanner Pro is Live 24x7!"
 
 cfg = {
     "mode": "BOTH",
@@ -46,54 +46,56 @@ def tg_api(m):
     tg_host = "api." + "telegram" + ".org"
     return "https:" + S + S + tg_host + S + "bot" + TELEGRAM_BOT_TOKEN.strip() + S + m
 
-
 def send_tg(msg):
+    if "YOUR_NEW" in TELEGRAM_BOT_TOKEN:
+        return
     try:
         r = requests.post(tg_api("sendMessage"), json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=8)
         if r.status_code != 200:
-            print("TG Send Err:", r.status_code, r.text[:100], flush=True)
+            print("TG Send Err:", r.status_code, r.text[:80], flush=True)
     except Exception as e:
         print("TG Post Err:", e, flush=True)
 
-def check_tg():
+def tg_worker():
     global last_uid, paused
-    try:
-        res = requests.get(tg_api("getUpdates"), params={"offset": last_uid + 1, "timeout": 1}, timeout=5)
-        if res.status_code != 200:
-            print("TG Poll Err:", res.status_code, res.text[:100], flush=True)
-            return
-        for item in res.json().get("result", []):
-            last_uid = item["update_id"]
-            m = item.get("message", {})
-            txt = m.get("text", "").strip().lower()
-            if str(m.get("chat", {}).get("id", "")) != TELEGRAM_CHAT_ID:
-                continue
-            if txt in [S + "both", S + "mode both"]:
-                cfg["mode"] = "BOTH"
-                send_tg("🔄 मोड: `BOTH` (Over/Under + Matches)")
-            elif txt in [S + "ou", S + "mode ou"]:
-                cfg["mode"] = "OVER_UNDER"
-                send_tg("🔄 मोड: `OVER_UNDER`")
-            elif txt in [S + "matches", S + "mode match"]:
-                cfg["mode"] = "MATCHES"
-                send_tg("🔄 मोड: `MATCHES`")
-            elif txt == S + "resume":
-                paused = False
-                send_tg("▶️ ट्रेडिंग फिर से चालू!")
-            elif txt in [S + "status", S + "start"]:
-                ou_t = stats["ou_w"] + stats["ou_l"]
-                ou_wr = (stats["ou_w"] / ou_t * 100) if ou_t else 0.0
-                m_t = stats["m_w"] + stats["m_l"]
-                m_wr = (stats["m_w"] / m_t * 100) if m_t else 0.0
-                send_tg(
-                    f"📊 *DERIV AI STATUS*\n"
-                    f"💎 बैलेंस: `${balance:.2f}` | PnL: `${stats['pnl']:+.2f}`\n"
-                    f"🎯 O/U WR: `{ou_wr:.1f}%` ({stats['ou_w']}W/{stats['ou_l']}L)\n"
-                    f"🎰 Match WR: `{m_wr:.1f}%` ({stats['m_w']}W/{stats['m_l']}L)\n"
-                    f"⚙️ मोड: `{cfg['mode']}`"
-                )
-    except Exception as e:
-        print("TG Check Err:", e, flush=True)
+    time.sleep(2)
+    send_tg("🚀 *Deriv AI Dual Scanner चालू!* (`V10–V100`)\nकमांड्स: `/status`, `/both`, `/ou`, `/matches`")
+    while True:
+        try:
+            if "YOUR_NEW" not in TELEGRAM_BOT_TOKEN:
+                res = requests.get(tg_api("getUpdates"), params={"offset": last_uid + 1, "timeout": 10}, timeout=15).json()
+                for item in res.get("result", []):
+                    last_uid = item["update_id"]
+                    m = item.get("message", {})
+                    txt = m.get("text", "").strip().lower()
+                    if str(m.get("chat", {}).get("id", "")) != TELEGRAM_CHAT_ID:
+                        continue
+                    if txt in [S + "both", S + "mode both"]:
+                        cfg["mode"] = "BOTH"
+                        send_tg("🔄 मोड: `BOTH` (Over/Under + Matches)")
+                    elif txt in [S + "ou", S + "mode ou"]:
+                        cfg["mode"] = "OVER_UNDER"
+                        send_tg("🔄 मोड: `OVER_UNDER`")
+                    elif txt in [S + "matches", S + "mode match"]:
+                        cfg["mode"] = "MATCHES"
+                        send_tg("🔄 मोड: `MATCHES`")
+                    elif txt == S + "resume":
+                        paused = False
+                        send_tg("▶️ ट्रेडिंग फिर से चालू!")
+                    elif txt in [S + "status", S + "start"]:
+                        ou_t = stats["ou_w"] + stats["ou_l"]
+                        ou_wr = (stats["ou_w"] / ou_t * 100) if ou_t else 0.0
+                        m_t = stats["m_w"] + stats["m_l"]
+                        m_wr = (stats["m_w"] / m_t * 100) if m_t else 0.0
+                        send_tg(
+                            f"📊 *DERIV AI STATUS*\n"
+                            f"💎 बैलेंस: `${balance:.2f}` | PnL: `${stats['pnl']:+.2f}`\n"
+                            f"🎯 O/U WR: `{ou_wr:.1f}%` ({stats['ou_w']}W/{stats['ou_l']}L)\n"
+                            f"🎰 Match WR: `{m_wr:.1f}%` ({stats['m_w']}W/{stats['m_l']}L)\n"
+                            f"⚙️ मोड: `{cfg['mode']}`"
+                        )
+        except Exception:
+            time.sleep(3)
 
 def get_signal(sym):
     d = list(history[sym])
@@ -169,24 +171,18 @@ def handle_tick(data):
 
 def ws_worker():
     global day_start, cur_day, paused
-    host_name = "ws." + "deriv" + "ws.com"
-    ws_url = "wss:" + S + S + host_name + S + "websockets" + S + "v3?app_id=1089"
-    print("Connecting to Deriv WS...", flush=True)
-    send_tg("🚀 *Deriv AI Dual Scanner चालू!* (`V10–V100`)\nकमांड्स: `/status`, `/both`, `/ou`, `/matches`")
-    last_tg = 0
-        while True:
+    servers = ["://derivws.com", "://derivws.com", "://derivws.com"]
+    idx = 0
+    while True:
+        host = servers[idx % len(servers)]
+        idx += 1
+        ws_url = "wss:" + S + S + host + S + "websockets" + S + "v3?app_id=1089&l=EN&brand=deriv"
         try:
-            check_tg()
-            hdrs = ["Origin: https://deriv.com", "User-Agent: Mozilla/5.0"]
-            ws = websocket.create_connection(ws_url, header=hdrs, timeout=15)
-
-            print("Deriv WS Connected!", flush=True)
+            ws = websocket.create_connection(ws_url, origin="https:" + S + S + "://deriv.com", timeout=15)
+            print("Connected to Deriv:", host, flush=True)
             for s in SYMBOLS:
                 ws.send(json.dumps({"ticks": s, "subscribe": 1}))
             while True:
-                if time.time() - last_tg >= 5:
-                    check_tg()
-                    last_tg = time.time()
                 today = datetime.now(IST).strftime("%Y-%m-%d")
                 if today != cur_day:
                     cur_day = today
@@ -194,10 +190,12 @@ def ws_worker():
                     paused = False
                 handle_tick(json.loads(ws.recv()))
         except Exception as e:
-            print("WS Err:", e, flush=True)
-            time.sleep(5)
+            print("WS Retry (" + host + "):", e, flush=True)
+            time.sleep(4)
 
+threading.Thread(target=tg_worker, daemon=True).start()
 threading.Thread(target=ws_worker, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+q
