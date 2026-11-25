@@ -12,7 +12,6 @@ TELEGRAM_CHAT_ID = "8466057689"
 # ====================================================
 
 S = chr(47)
-IST = timezone(timedelta(hours=5, minutes=30))
 app = Flask(__name__)
 
 @app.route(S)
@@ -20,12 +19,12 @@ def home():
     return "Binance 5-Coin AI Pro Bot is Running 24x7!"
 
 cfg = {
-    "tp_pct": 3.0,            # Take-Profit (+3.0% क्रिप्टो मूवमेंट)
-    "sl_pct": -1.5,           # Stop-Loss (-1.5%)
-    "be_trigger": 1.5,        # +1.5% मुनाफे पर SL को +0.2% पर लॉक करेगा
-    "risk_pct": 20.0,         # कुल इक्विटी का 20% प्रति ट्रेड
-    "max_trades": 3,          # एक साथ अधिकतम 3 कॉइन्स में ट्रेड
-    "min_score": 75           # न्यूनतम AI Score (75/100)
+    "tp_pct": 3.0,
+    "sl_pct": -1.5,
+    "be_trigger": 1.5,
+    "risk_pct": 20.0,
+    "max_trades": 3,
+    "min_score": 70
 }
 
 COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
@@ -46,11 +45,14 @@ def binance_url(path):
 def send_tg(msg):
     tok = str(TELEGRAM_BOT_TOKEN or "")
     if not tok or "YOUR_TELEGRAM" in tok:
+        print("TOKEN MISSING IN CODE!", flush=True)
         return
     try:
-        requests.post(tg_url("sendMessage"), json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=8)
-    except Exception:
-        pass
+        r = requests.post(tg_url("sendMessage"), json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=8)
+        if r.status_code != 200:
+            print("TG Send Err:", r.status_code, r.text[:100], flush=True)
+    except Exception as e:
+        print("TG Post Err:", e, flush=True)
 
 def get_equity(prices=None):
     val = 0.0
@@ -80,10 +82,10 @@ def tg_worker():
                     if str(m.get("chat", {}).get("id", "")) != TELEGRAM_CHAT_ID:
                         continue
                     if txt.startswith(S + "tp "):
-                        cfg["tp_pct"] = abs(float(txt.split()[1]))
+                        cfg["tp_pct"] = abs(float(txt.split().pop()))
                         send_tg(f"✅ *Binance TP अपडेट:* `+{cfg['tp_pct']}%`")
                     elif txt.startswith(S + "sl "):
-                        cfg["sl_pct"] = -abs(float(txt.split()[1]))
+                        cfg["sl_pct"] = -abs(float(txt.split().pop()))
                         send_tg(f"🛑 *Binance SL अपडेट:* `{cfg['sl_pct']}%`")
                     elif txt == S + "journal":
                         if not journal:
@@ -105,17 +107,21 @@ def tg_worker():
                             f"⚙️ TP: `+{cfg['tp_pct']}%` | SL: `{cfg['sl_pct']}%` | 🔒 BE: `+{cfg['be_trigger']}%`\n"
                             f"📂 ओपन कॉइन्स: `{len(positions)}/{cfg['max_trades']}`"
                         )
-        except Exception:
+        except Exception as e:
+            print("TG Loop Err:", e, flush=True)
             time.sleep(3)
 
 def analyze_coin(sym):
     try:
-        r = requests.get(binance_url("klines"), params={"symbol": sym, "interval": "5m", "limit": 30}, timeout=10).json()
-        closes = [float(k[4]) for k in r]
-        vols = [float(k[5]) for k in r]
+        resp = requests.get(binance_url("klines"), params={"symbol": sym, "interval": "5m", "limit": 30}, timeout=10)
+        if resp.status_code != 200:
+            print("Binance HTTP Err:", resp.status_code, resp.text[:80], flush=True)
+            return 0, None, ""
+        r = resp.json()
+        closes = [float(k.pop(4)) for k in [list(x) for x in r]]
+        vols = [float(k.pop(4)) for k in [list(x) for x in r]]
         curr_p = closes[-1]
 
-        # 1. RSI (14-period)
         gains, losses = [], []
         for i in range(1, 15):
             diff = closes[-i] - closes[-i - 1]
@@ -126,11 +132,9 @@ def analyze_coin(sym):
         rs = (avg_g / avg_l) if avg_l > 0 else 100
         rsi = 100 - (100 / (1 + rs))
 
-        # 2. EMA-9 बनाम EMA-21 ट्रेंड
         ema9 = sum(closes[-9:]) / 9.0
         ema21 = sum(closes[-21:]) / 21.0
 
-        # 3. वॉल्यूम स्पाइक चेक
         avg_vol = sum(vols[-10:-1]) / 9.0
         curr_vol = vols[-1]
 
@@ -139,30 +143,31 @@ def analyze_coin(sym):
 
         if 32 <= rsi <= 48:
             score += 35
-            reasons.append(f"RSI Oversold Bounce ({rsi:.1f})")
-        elif 48 < rsi <= 60:
-            score += 20
+            reasons.append(f"RSI Bounce ({rsi:.1f})")
+        elif 48 < rsi <= 62:
+            score += 25
             reasons.append(f"Healthy RSI ({rsi:.1f})")
 
         if curr_p > ema9 > ema21:
             score += 35
-            reasons.append("Bullish EMA Trend")
+            reasons.append("Bullish EMA")
         elif curr_p > ema21:
             score += 20
 
-        if curr_vol > avg_vol * 1.3:
+        if curr_vol > avg_vol * 1.2:
             score += 30
-            reasons.append("Volume Spike")
-        elif curr_vol > avg_vol:
-            score += 15
+            reasons.append("Vol Spike")
+        elif curr_vol > avg_vol * 0.9:
+            score += 20
 
         return score, curr_p, ", ".join(reasons)
-    except Exception:
+    except Exception as e:
+        print("Analyze Err:", sym, e, flush=True)
         return 0, None, ""
 
 def binance_worker():
     global balance
-    endpoint = binance_url("klines")
+    print("Binance Scanner Thread Started!", flush=True)
     while True:
         try:
             live_prices = {}
@@ -171,7 +176,6 @@ def binance_worker():
                 if price:
                     live_prices[sym] = price
 
-                # ओपन पोजीशन्स पर TP, SL और Breakeven चेक करें
                 if sym in positions and price:
                     pos = positions[sym]
                     pnl_pct = ((price - pos["entry"]) / pos["entry"]) * 100
@@ -200,7 +204,6 @@ def binance_worker():
                         )
                         del positions[sym]
 
-                # नए हाई-प्रोबेबिलिटी कॉइन में एंट्री
                 elif sym not in positions and len(positions) < cfg["max_trades"] and score >= cfg["min_score"] and price:
                     eq = get_equity(live_prices)
                     amt = round(eq * (cfg["risk_pct"] / 100.0), 2)
@@ -219,6 +222,7 @@ def binance_worker():
                             f"🧠 कारण: {reason}"
                         )
 
+            print(f"Binance Scan OK | Cash: ${balance:.2f} | Open: {len(positions)}", flush=True)
             time.sleep(20)
         except Exception as e:
             print("Binance Loop Err:", e, flush=True)
