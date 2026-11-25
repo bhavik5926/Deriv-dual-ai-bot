@@ -7,7 +7,8 @@ from flask import Flask
 from datetime import datetime, timezone, timedelta
 
 # ================= TELEGRAM सेटिंग्स =================
-TELEGRAM_BOT_TOKEN = "9229203140:AAHtePWnAsVLyGza-cwMcNqtQ6Vo9PDIjxw1"
+TELEGRAM_BOT_TOKEN = "9229203140:AAHtePWnAsVLyGza-cwMcNqtQ6Vo9PDIjxw" + "1"
+
 TELEGRAM_CHAT_ID = "8466057689"
 # ====================================================
 
